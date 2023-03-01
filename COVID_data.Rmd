@@ -1,0 +1,140 @@
+---
+title: "COVID Data Analysis"
+author: "S"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(stringr)
+library(lubridate)
+```
+
+## Introduction and Summary
+In this project, I analyzed COVID-19 case/death data provided by Johns Hopkins University. I imported and cleaned up both US and global data and looked at trends. For the visualization and analysis portions of the project, I focused just on the US data. In my visualizations, I looked at the cumulative aggregate statistics in the US by county. My plots and histograms showed that as a function of population, both case numbers and death numbers increased relatively linearly as expected, although the spread was wider for the deaths vs. population plot. For the analysis portion of the project, I explored the seasonable nature of COVID-19's spread by generating a polynomial regression model that related month of the year with the average latitude of county's with their worst day (as measured by number of new deaths). This showed that while winter months were overall correlated with more COVID spread, during the summer, there was a relative increase in 'bad' days in the south compared with the north. Such an insight could be useful to public health officials seeking to pre-allocate hospital supplies each month to the part of the country that will need it most.
+
+
+## Import the Data
+
+```{r}
+url_in = "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+file_names = c("time_series_covid19_confirmed_US.csv",  "time_series_covid19_confirmed_global.csv", "time_series_covid19_deaths_US.csv",  "time_series_covid19_deaths_global.csv")
+urls = str_c(url_in,file_names)
+
+global_cases = read_csv(urls[2])
+global_deaths = read_csv(urls[4])
+us_cases = read_csv(urls[1])
+us_deaths = read_csv(urls[3])
+
+
+```
+
+## Tidy the Data and Generate Summary Statistics
+
+```{r}
+global_deaths = global_deaths %>% pivot_longer(cols = -c('Province/State','Country/Region', Lat, Long), names_to = "date", values_to = "deaths")
+
+global_cases = global_cases %>% pivot_longer(cols = -c('Province/State','Country/Region', Lat, Long), names_to = "date", values_to = "cases")
+
+us_cases = subset(us_cases, select = -c(UID,iso2,iso3,code3,FIPS))
+
+us_deaths = subset(us_deaths, select = -c(UID,iso2,iso3,code3,FIPS))
+
+us_cases = us_cases %>% pivot_longer(cols = -c('Province_State','Country_Region', Admin2, Combined_Key, Lat, Long_), names_to = "date", values_to = "cases")
+
+us_deaths = us_deaths %>% pivot_longer(cols = -c('Province_State','Country_Region', Admin2, Combined_Key, Lat, Long_, Population), names_to = "date", values_to = "deaths")
+
+global = global_cases %>% full_join(global_deaths)
+
+us = us_cases %>% full_join(us_deaths)
+
+global = global %>% mutate(global, date = mdy(date))
+
+
+us = us %>% mutate(us, date = mdy(date))
+
+global = global %>% filter(cases > 0)
+
+us = us %>% filter(cases > 0)
+
+summary(us)
+summary(global)
+
+```
+
+## Generate Visualizations of the Data
+The first two plots below show the aggregate number of cases and deaths versus the population of each US county. Interestingly, the spread is wider for deaths vs. population (indicating variability in care and population susceptibility among other factors) than number of cases (which is relatively narrowly spread and linear).
+
+The second two plots show histograms of case and population fatality rates for each US county. There's some degree of skewness, but they both look generally normal/bell curve shaped.
+
+```{r }
+#filter to latest time
+latest_day = us %>% filter(date == "2023-02-26")
+frame()
+plot(latest_day$Population,latest_day$cases)
+title("Number of Cumulative Cases on 2/26/2023 in each US County vs. County Population")
+
+frame()
+plot(latest_day$Population,latest_day$deaths)
+title("Number of Cumulative Deaths on 2/26/2023 in each US County vs. County Population")
+
+case_fatality_rate = latest_day$deaths/latest_day$cases
+cfr = data.frame(case_fatality_rate)
+cfr_filtered = filter(cfr, case_fatality_rate< .3, case_fatality_rate > 0) #filtering out a few counties with cfr high outliers and counties with CFRs of 0.0000 due to small sample sizes
+frame()
+hist(cfr_filtered$case_fatality_rate, breaks = 200, main = "Histogram of US County CFR through 2/26/2023")
+
+pop_fatality_rate = latest_day$deaths/latest_day$Population
+pfr = data.frame(pop_fatality_rate)
+frame()
+hist(pfr$pop_fatality_rate, main = "Histogram of US County Pop. COVID Death Rate through 2/26/2023")
+
+```
+
+## Analysis
+For my analysis, I generated a 4 degree polynomial regression model to correlate each US county's worst month (as measured by number of new deaths in a given day) with county latitude. More specifically, the model predicts the average latitude where the worst case days will occur based on an input month. The R^2 value of .1388 certainly indicates incompleteness of this correlation - as we know, COVID spread is highly multivariable. That said, it does show some degree of correlation that could public health planning. For example, there is a latitude dip during the summer months, which could be due to people spending more time inside in the south when the weather is hotter.
+
+```{r }
+
+us = us %>% mutate(new_cases = cases - lag(cases),new_deaths = deaths - lag(deaths))
+#Relationship between worst day and total population fatality rate
+
+#relationship between day of the worst day and lat
+usf = us
+usf = usf %>% filter(new_deaths>10)
+counties = factor(usf$Combined_Key)
+usf$counties = counties
+
+month = format(as.Date(usf$date, format = "%Y-%m-%d"), "%m")
+months = factor(month)
+months = as.numeric(months)
+usf$months = months
+
+wd = usf %>% group_by(Combined_Key) %>% slice_max(new_deaths)
+
+wd = wd %>% filter(Lat > 0)
+
+wd$months2 = (wd$months)^2
+ms = wd$months
+model = lm(wd$Lat~ poly(ms,4))
+
+ms = c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
+
+predict1 = predict(model, data.frame(months))
+
+frame()
+plot(wd$months,wd$Lat)
+lines(ms,predict1,col='blue')
+title("Worst Case Day for each County Latitude vs. Month")
+summary(model)
+```
+
+## Conclusion
+In this project, I imported, cleaned, and visualized data on COVID cases and deaths within the United States and across the world. As an analysis, I built a polynomial regression model to predict latitude of counties with their highest death number days based on the month of the year. Public health officials could use such insights to pre-allocate hospital equipment in regions they anticipate will have higher death rates from COVID or other respiratory viruses.
+
+A bias innate within all COVID data is the prevalence of testing to determine the number of cases as well as the criteria used to determine whether a death is caused by COVID or is due to another condition while the patient just happened test positive for COVID.
+
+A personal bias I might have in this analysis is my belief that death numbers are more statistically important than case numbers. Especially as the pandemic progressed beyond the initial stages of uncertainty and effective vaccines became available (at least where I live in the US), I personally stopped thinking much about COVID. If I got it, I got it. I didn't think the public health measures were worth the societal costs they imposed for the most par; they only delayed the inevitable. This personal bias could have been a partial subconscious motivation to focus my analysis death rates by month rather than case rates. Taking a step back, case rates do have some relevance (even if not as much as death rates), so if I were to continue this project beyond the scope of the assignment, I would also generate a predictive model to correlate months with latitude of case spikes as well.
